@@ -484,6 +484,7 @@
       const fields = ['avgMin','underMax','nearMin','nearMax','inMin','inMax','overMin','overMax','nearPctMax','overPctMax'];
       for (const k of fields){ const el = document.getElementById(k); const v = parseFloat(el.value); if(!isNaN(v)) SETTINGS[k] = v; }
       saveSettings();
+      document.querySelector('.criteria-settings').open = false;
     };
     document.getElementById('resetSettings').onclick = resetSettings;
 
