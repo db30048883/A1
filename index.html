@@ -182,23 +182,8 @@
               <label class="setting-field">Average pass minimum (lbs)
                 <input id="avgMin" type="number" step="1" inputmode="numeric"/>
               </label>
-              <label class="setting-field">Undersize below (lbs)
-                <input id="underMax" type="number" step="1" inputmode="numeric"/>
-              </label>
-              <label class="setting-field">Undersize range (lbs)
-                <span class="range-inputs"><input id="nearMin" type="number" step="1" inputmode="numeric"/><span>to</span><input id="nearMax" type="number" step="1" inputmode="numeric"/></span>
-              </label>
-              <label class="setting-field">In-spec range (lbs)
+              <label class="setting-field">Allowed weight range (lbs)
                 <span class="range-inputs"><input id="inMin" type="number" step="1" inputmode="numeric"/><span>to</span><input id="inMax" type="number" step="1" inputmode="numeric"/></span>
-              </label>
-              <label class="setting-field">Oversize range (lbs)
-                <span class="range-inputs"><input id="overMin" type="number" step="1" inputmode="numeric"/><span>to</span><input id="overMax" type="number" step="1" inputmode="numeric"/></span>
-              </label>
-              <label class="setting-field">Undersize Maximum (% by weight)
-                <input id="nearPctMax" type="number" step="0.01" inputmode="decimal"/>
-              </label>
-              <label class="setting-field">Oversize maximum (% by weight)
-                <input id="overPctMax" type="number" step="0.01" inputmode="decimal"/>
               </label>
             </div>
             <div class="settings-actions">
@@ -219,22 +204,21 @@
     const numpad = document.getElementById('numpad');
     let currentEntry = '';
 
-    const DEFAULTS = {
-      avgMin: 5400,
-      underMax: 3500,
-      nearMin: 3500,
-      nearMax: 3700,
-      inMin: 3700,
-      inMax: 7500,
-      overMin: 7500,
-      overMax: 8500,
-      nearPctMax: 3, // % by weight
-      overPctMax: 10 // % by weight
-    };
-    let SETTINGS = JSON.parse(localStorage.getItem('armorRockSettings') || 'null') || { ...DEFAULTS };
+    const SPEC_VERSION = 'A1-27000-55000-v1';
+    const DEFAULTS = { avgMin: 36000, inMin: 27000, inMax: 55000 };
+    const savedSettings = JSON.parse(localStorage.getItem('armorRockSettings') || 'null');
+    let SETTINGS = localStorage.getItem('armorRockSpecVersion') === SPEC_VERSION
+      ? { ...DEFAULTS, ...(savedSettings || {}) }
+      : { ...DEFAULTS };
+
+    // Apply the A1 specification once for existing installations with older settings.
+    if (localStorage.getItem('armorRockSpecVersion') !== SPEC_VERSION) {
+      localStorage.setItem('armorRockSettings', JSON.stringify(SETTINGS));
+      localStorage.setItem('armorRockSpecVersion', SPEC_VERSION);
+    }
 
     function saveSettings(){ localStorage.setItem('armorRockSettings', JSON.stringify(SETTINGS)); updateDisplay(); }
-    function resetSettings(){ SETTINGS = { ...DEFAULTS }; saveSettings(); loadSettingsUI(); }
+    function resetSettings(){ SETTINGS = { ...DEFAULTS }; localStorage.setItem('armorRockSpecVersion', SPEC_VERSION); saveSettings(); loadSettingsUI(); }
     function loadSettingsUI(){
       for (const k of Object.keys(DEFAULTS)) {
         const el = document.getElementById(k);
@@ -286,16 +270,12 @@
 
     // ===== Helpers =====
     function sum(arr){ return arr.reduce((s,v)=>s+v,0); }
-    function pct(part,total){ return total>0 ? (part/total*100) : 0; }
-
     function bucketize(weights){
       const S = SETTINGS;
-      const undersize = weights.filter(w => w < S.underMax);
-      const near = weights.filter(w => w >= S.nearMin && w < S.nearMax);
+      const undersize = weights.filter(w => w < S.inMin);
       const inspec = weights.filter(w => w >= S.inMin && w <= S.inMax);
-      const over = weights.filter(w => w > S.overMin && w <= S.overMax);
-      const oos = weights.filter(w => w > S.overMax);
-      return { undersize, near, inspec, over, oos };
+      const oversize = weights.filter(w => w > S.inMax);
+      return { undersize, inspec, oversize };
     }
 
     function stats(){
@@ -303,12 +283,8 @@
       const totalWeight = sum(rockWeights);
       const totalTons = totalWeight / 2000; // tons
       const avgWeight = total>0 ? totalWeight/total : 0;
-      const { undersize, near, inspec, over, oos } = bucketize(rockWeights);
-      const overWt = sum(over);
-      const nearWt = sum(near);
-      const overPct = pct(overWt, totalWeight);
-      const nearPct = pct(nearWt, totalWeight);
-      return { total, totalWeight, totalTons, avgWeight, undersize, near, inspec, over, oos, overWt, nearWt, overPct, nearPct };
+      const { undersize, inspec, oversize } = bucketize(rockWeights);
+      return { total, totalWeight, totalTons, avgWeight, undersize, inspec, oversize };
     }
 
     function badge(pass){ return `<span class="badge ${pass?'pass':'fail'}">${pass?'PASS':'FAIL'}</span>`; }
@@ -328,14 +304,13 @@
         avgWeight: +st.avgWeight.toFixed(2),
         undersize: st.undersize.length,
         inspec: st.inspec.length,
-        oversizePercent: +st.overPct.toFixed(2),
-        nearUndersizePercent: +st.nearPct.toFixed(2),
-        outOfSpec: st.oos.length
+        oversize: st.oversize.length,
+        lotPass: st.total > 0 && st.avgWeight >= S.avgMin && st.undersize.length === 0 && st.oversize.length === 0
       };
 
       const avgOk = st.avgWeight >= S.avgMin;
-      const overOk = st.overPct <= S.overPctMax;
-      const nearOk = st.nearPct <= S.nearPctMax;
+      const weightsOk = st.undersize.length === 0 && st.oversize.length === 0;
+      const lotPass = st.total > 0 && avgOk && weightsOk;
 
       const res = `
         <div class="stat-grid">
@@ -344,12 +319,14 @@
             <div class="kv"><span class="muted">Total tons</span><div>${st.totalTons.toFixed(3)} tons</div></div>
             <div class="kv"><span class="muted">Average</span><div>${st.avgWeight.toFixed(2)} lbs ${badge(avgOk)}</div></div>
           </div>
-          <div class="card"><div class="kv"><strong>Undersize (&lt;${S.underMax})</strong><div>${st.undersize.length}</div></div>
-            <div class="kv"><span class="muted">Near ${S.nearMin}-${S.nearMax} lbs</span><div>${st.near.length} | ${(st.nearPct).toFixed(2)}% ${badge(nearOk)}</div></div>
+          <div class="card"><div class="kv"><strong>Weight Spec</strong><div>${badge(weightsOk)}</div></div>
+            <div class="kv"><span class="muted">Undersize (&lt;${S.inMin})</span><div>${st.undersize.length}</div></div>
             <div class="kv"><span class="muted">In-Spec ${S.inMin}-${S.inMax} lbs</span><div>${st.inspec.length}</div></div>
+            <div class="kv"><span class="muted">Oversize (&gt;${S.inMax})</span><div>${st.oversize.length}</div></div>
           </div>
-          <div class="card"><div class="kv"><strong>Oversize % by wt (${S.overMin}-${S.overMax})</strong><div>${st.overPct.toFixed(2)}% ${badge(overOk)}</div></div>
-            <div class="kv"><span class="muted">Out of Spec (&gt;${S.overMax})</span><div>${st.oos.length}</div></div>
+          <div class="card"><div class="kv"><strong>LOT STATUS</strong><div>${badge(lotPass)}</div></div>
+            <div class="kv"><span class="muted">Required average</span><div>${S.avgMin.toFixed(0)}+ lbs</div></div>
+            <div class="kv"><span class="muted">Outside range allowed</span><div>0 rocks</div></div>
           </div>
         </div>`;
 
@@ -383,7 +360,7 @@
     function viewSavedLogs() {
       const logs = JSON.parse(localStorage.getItem('armorRockLogs') || '[]');
       if (!logs.length) { document.getElementById('savedLogs').innerHTML = '<p>No saved logs found.</p>'; return; }
-      const detailed = logs.map((log, idx) => `Log ${idx + 1} — ${log.timestamp}\n  Total: ${log.total} rocks\n  Total Weight: ${(+log.totalWeight).toFixed(2)} lbs\n  Total Tons: ${(+log.totalTons).toFixed(3)} tons\n  Avg: ${(+log.avgWeight).toFixed(2)} lbs\n  Undersize: ${log.undersize}\n  Near Undersize %: ${(+log.nearUndersizePercent).toFixed(2)}\n  In Spec: ${log.inspec}\n  Oversize %: ${(+log.oversizePercent).toFixed(2)}\n  Out of Spec: ${log.outOfSpec}\n  Weights: ${log.weights.join(', ')}`).join('\n\n');
+      const detailed = logs.map((log, idx) => `Log ${idx + 1} — ${log.timestamp}\n  Total: ${log.total} rocks\n  Total Weight: ${(+log.totalWeight).toFixed(2)} lbs\n  Total Tons: ${(+log.totalTons).toFixed(3)} tons\n  Avg: ${(+log.avgWeight).toFixed(2)} lbs\n  Undersize: ${log.undersize || 0}\n  In Spec: ${log.inspec || 0}\n  Oversize: ${log.oversize ?? log.outOfSpec ?? 0}\n  Lot Status: ${log.lotPass === true ? 'PASS' : 'FAIL'}\n  Weights: ${log.weights.join(', ')}`).join('\n\n');
       document.getElementById('savedLogs').innerHTML = `
         <h3>All Saved Logs (${logs.length})</h3>
         <pre>${detailed}</pre>
@@ -394,7 +371,7 @@
       const logs = JSON.parse(localStorage.getItem('armorRockLogs') || '[]');
       if (!logs.length) { alert('No logs available to download.'); return; }
       const log = logs[logs.length - 1];
-      const content = `Timestamp: ${log.timestamp}\nTotal Rocks: ${log.total}\nTotal Weight: ${(+log.totalWeight).toFixed(2)} lbs\nTotal Tons: ${(+log.totalTons).toFixed(3)} tons\nAverage Weight: ${(+log.avgWeight).toFixed(2)} lbs\nUndersize: ${log.undersize}\nNear Undersize %: ${(+log.nearUndersizePercent).toFixed(2)}\nIn Spec: ${log.inspec}\nOversize %: ${(+log.oversizePercent).toFixed(2)}\nOut of Spec: ${log.outOfSpec}\nWeights: ${log.weights.join(', ')}`;
+      const content = `Timestamp: ${log.timestamp}\nTotal Rocks: ${log.total}\nTotal Weight: ${(+log.totalWeight).toFixed(2)} lbs\nTotal Tons: ${(+log.totalTons).toFixed(3)} tons\nAverage Weight: ${(+log.avgWeight).toFixed(2)} lbs\nUndersize: ${log.undersize || 0}\nIn Spec: ${log.inspec || 0}\nOversize: ${log.oversize ?? log.outOfSpec ?? 0}\nLot Status: ${log.lotPass === true ? 'PASS' : 'FAIL'}\nWeights: ${log.weights.join(', ')}`;
       const blob = new Blob([content], { type: 'text/plain' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -412,11 +389,10 @@
         ['Total Weight (lbs)', (+log.totalWeight).toFixed(2)],
         ['Total Tons', (+log.totalTons).toFixed(3)],
         ['Average Weight (lbs)', (+log.avgWeight).toFixed(2)],
-        ['Undersize', log.undersize],
-        ['Near Undersize %', (+log.nearUndersizePercent).toFixed(2)],
-        ['In Spec', log.inspec],
-        ['Oversize %', (+log.oversizePercent).toFixed(2)],
-        ['Out of Spec', log.outOfSpec],
+        ['Undersize', log.undersize || 0],
+        ['In Spec', log.inspec || 0],
+        ['Oversize', log.oversize ?? log.outOfSpec ?? 0],
+        ['Lot Status', log.lotPass === true ? 'PASS' : 'FAIL'],
         ...log.weights.map((w, i) => [`Rock ${i + 1}`, w])
       ];
       const csv = [header, ...data].map(row => row.join(',')).join('\n');
@@ -429,7 +405,7 @@
     function downloadAllLogsTxt() {
       const logs = JSON.parse(localStorage.getItem('armorRockLogs') || '[]');
       if (!logs.length) { alert('No logs available.'); return; }
-      const content = logs.map((log, idx) => `Log ${idx + 1} — ${log.timestamp}\nTotal: ${log.total} rocks\nTotal Weight: ${(+log.totalWeight).toFixed(2)} lbs\nTotal Tons: ${(+log.totalTons).toFixed(3)} tons\nAverage Weight: ${(+log.avgWeight).toFixed(2)} lbs\nUndersize: ${log.undersize}\nNear Undersize %: ${(+log.nearUndersizePercent).toFixed(2)}\nIn Spec: ${log.inspec}\nOversize %: ${(+log.oversizePercent).toFixed(2)}\nOut of Spec: ${log.outOfSpec}\nWeights: ${log.weights.join(', ')}`).join('\n\n');
+      const content = logs.map((log, idx) => `Log ${idx + 1} — ${log.timestamp}\nTotal: ${log.total} rocks\nTotal Weight: ${(+log.totalWeight).toFixed(2)} lbs\nTotal Tons: ${(+log.totalTons).toFixed(3)} tons\nAverage Weight: ${(+log.avgWeight).toFixed(2)} lbs\nUndersize: ${log.undersize || 0}\nIn Spec: ${log.inspec || 0}\nOversize: ${log.oversize ?? log.outOfSpec ?? 0}\nLot Status: ${log.lotPass === true ? 'PASS' : 'FAIL'}\nWeights: ${log.weights.join(', ')}`).join('\n\n');
       const blob = new Blob([content], { type: 'text/plain' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a'); a.href = url; a.download = `armor_logs_all_${new Date().toISOString().split('T')[0]}.txt`;
@@ -439,10 +415,10 @@
     function downloadAllLogsCSV() {
       const logs = JSON.parse(localStorage.getItem('armorRockLogs') || '[]');
       if (!logs.length) { alert('No logs available.'); return; }
-      let csv = 'Log,Timestamp,Total Rocks,Total Weight (lbs),Total Tons,Average Weight (lbs),Undersize,Near Undersize %,In Spec,Oversize %,Out of Spec,Rock #,Weight (lbs)\n';
+      let csv = 'Log,Timestamp,Total Rocks,Total Weight (lbs),Total Tons,Average Weight (lbs),Undersize,In Spec,Oversize,Lot Status,Rock #,Weight (lbs)\n';
       logs.forEach((log, idx) => {
         log.weights.forEach((w, i) => {
-          csv += `${idx + 1},${log.timestamp},${log.total},${(+log.totalWeight).toFixed(2)},${(+log.totalTons).toFixed(3)},${(+log.avgWeight).toFixed(2)},${log.undersize},${(+log.nearUndersizePercent).toFixed(2)},${log.inspec},${(+log.oversizePercent).toFixed(2)},${log.outOfSpec},${i + 1},${w}\n`;
+          csv += `${idx + 1},${log.timestamp},${log.total},${(+log.totalWeight).toFixed(2)},${(+log.totalTons).toFixed(3)},${(+log.avgWeight).toFixed(2)},${log.undersize || 0},${log.inspec || 0},${log.oversize ?? log.outOfSpec ?? 0},${log.lotPass === true ? 'PASS' : 'FAIL'},${i + 1},${w}\n`;
         });
       });
       const blob = new Blob([csv], { type: 'text/csv' });
@@ -481,7 +457,7 @@
     document.getElementById('undoBtn').onclick = undoLast;
 
     document.getElementById('saveSettings').onclick = () => {
-      const fields = ['avgMin','underMax','nearMin','nearMax','inMin','inMax','overMin','overMax','nearPctMax','overPctMax'];
+      const fields = ['avgMin','inMin','inMax'];
       for (const k of fields){ const el = document.getElementById(k); const v = parseFloat(el.value); if(!isNaN(v)) SETTINGS[k] = v; }
       saveSettings();
       document.querySelector('.criteria-settings').open = false;
